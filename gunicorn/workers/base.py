@@ -125,15 +125,17 @@ class Worker(object):
 
         self.log.close_on_exec()
 
+        # 注册信号和对应的处理函数
         self.init_signals()
 
         self.load_wsgi()
 
+        # 钩子函数
         self.cfg.post_worker_init(self)
 
         # Enter main run loop
         self.booted = True
-        # Worker运行
+        # Worker开始运行
         self.run()
 
     def load_wsgi(self):

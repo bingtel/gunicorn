@@ -88,7 +88,6 @@ else:
         """ Overriding PY2 execfile() implementation to support .pyc files """
         if fname.endswith(".pyc"):
             return six.exec_(_get_codeobj(fname), *args)
-        # 执行一个python文件
         return execfile(fname, *args)
 
     def bytes_to_str(s):

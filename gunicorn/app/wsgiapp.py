@@ -5,7 +5,6 @@
 
 import os
 import sys
-
 from gunicorn.errors import ConfigError
 from gunicorn.app.base import Application
 from gunicorn import util
@@ -37,6 +36,7 @@ class WSGIApplication(Application):
             parser.error("No application module specified.")
 
         self.cfg.set("default_proc_name", args[0])
+        # ['gunicorn.app.app:app']
         self.app_uri = args[0]
 
     def chdir(self):

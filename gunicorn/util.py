@@ -219,6 +219,7 @@ if sys.platform.startswith("win"):
     def _unlink(filename):
         _waitfor(os.unlink, filename)
 else:
+    # os.unlink() 方法用于删除文件,如果文件是一个目录则返回一个错误
     _unlink = os.unlink
 
 

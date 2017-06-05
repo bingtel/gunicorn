@@ -48,9 +48,19 @@ class Arbiter(object):
     SIG_QUEUE = []
 
     # 所有合法的信号
+    # [1, 3, 2, 15, 21, 22, 10, 12, 28]
     SIGNALS = [getattr(signal, "SIG%s" % x)
                for x in "HUP QUIT INT TERM TTIN TTOU USR1 USR2 WINCH".split()]
     # key:信号的值, value: 信号的名字
+    """
+    {1: 'hup', 2: 'int', 3: 'quit', 4: 'ill', 5: 'trap', 6: 'iot',
+     7: 'bus', 8: 'fpe', 9: 'kill', 10: 'usr1', 11: 'segv', 12: 'usr2',
+     13: 'pipe', 14: 'alrm', 15: 'term', 17: 'cld', 18: 'cont', 19: 'stop',
+     20: 'tstp', 21: 'ttin', 22: 'ttou', 23: 'urg', 24: 'xcpu', 25: 'xfsz',
+     26: 'vtalrm', 27: 'prof', 28: 'winch', 29: 'poll', 30: 'pwr', 31: 'sys',
+     34: 'rtmin', 64: 'rtmax'
+    }
+    """
     SIG_NAMES = dict(
         (getattr(signal, name), name[3:].lower()) for name in dir(signal)
         if name[:3] == "SIG" and name[3] != "_"
@@ -82,7 +92,7 @@ class Arbiter(object):
             "args": args,
             "cwd": cwd,
             # 可执行命令,比如:python, gunicorn等
-            0: sys.executabl
+            0: sys.executable
         }
 
     def _get_num_workers(self):
@@ -92,6 +102,7 @@ class Arbiter(object):
         old_value = self._num_workers
         self._num_workers = value
         self.cfg.nworkers_changed(self, value, old_value)
+
     num_workers = property(_get_num_workers, _set_num_workers)
 
     def setup(self, app):
@@ -133,21 +144,30 @@ class Arbiter(object):
         """
         self.log.info("Starting gunicorn %s", __version__)
 
+        # 如果系统中已经存在了一个主进程
+        # 那么该主进程就要起个新名字
         if 'GUNICORN_PID' in os.environ:
             self.master_pid = int(os.environ.get('GUNICORN_PID'))
             self.proc_name = self.proc_name + ".2"
             self.master_name = "Master.2"
 
+        # 获取进程id
         self.pid = os.getpid()
         if self.cfg.pidfile is not None:
             pidname = self.cfg.pidfile
             if self.master_pid != 0:
                 pidname += ".2"
+            # 创建一个以pidname命名的Pidfile对象
             self.pidfile = Pidfile(pidname)
+            # 创建一个临时文件
             self.pidfile.create(self.pid)
+        # 回调执行一些函数
         self.cfg.on_starting(self)
 
+        # 为信号注册对应的处理函数
         self.init_signals()
+
+        # socket连接,将被工作者进程处理
         if not self.LISTENERS:
             self.LISTENERS = create_sockets(self.cfg, self.log)
 
@@ -160,6 +180,7 @@ class Arbiter(object):
         if hasattr(self.worker_class, "check_config"):
             self.worker_class.check_config(self.cfg, self.log)
 
+        # 回调一些函数
         self.cfg.when_ready(self)
 
     def init_signals(self):
@@ -172,6 +193,7 @@ class Arbiter(object):
             [os.close(p) for p in self.PIPE]
 
         # initialize the pipe
+        # (r, w)
         self.PIPE = pair = os.pipe()
         for p in pair:
             util.set_non_blocking(p)
@@ -179,7 +201,7 @@ class Arbiter(object):
 
         self.log.close_on_exec()
 
-        # initialize all signals
+        # bind signals
         [signal.signal(s, self.signal) for s in self.SIGNALS]
         signal.signal(signal.SIGCHLD, self.handle_chld)
 
@@ -508,6 +530,8 @@ class Arbiter(object):
         """
         try:
             while True:
+                # 如果pid为-1，则等待当前进程的任何子进程
+                # 使父进程不阻塞立即返回
                 wpid, status = os.waitpid(-1, os.WNOHANG)
                 if not wpid:
                     break
@@ -542,8 +566,10 @@ class Arbiter(object):
             self.spawn_workers()
 
         workers = self.WORKERS.items()
+        # 按照工作者进程的age属性升序排列
         workers = sorted(workers, key=lambda w: w[1].age)
         while len(workers) > self.num_workers:
+            # 处理掉多余的、最老的工作者进程
             (pid, _) = workers.pop(0)
             self.kill_worker(pid, signal.SIGTERM)
 
@@ -558,16 +584,18 @@ class Arbiter(object):
     def spawn_worker(self):
         """fork工作者进程
         """
+        # worker_age的用途: 标记工作者进程创建的先后顺序
         self.worker_age += 1
         # 根据指定的worker_class参数,决定创建什么样的Worker
         worker = self.worker_class(self.worker_age, self.pid, self.LISTENERS,
                                    self.app, self.timeout / 2.0,
                                    self.cfg, self.log)
+        # 钩子函数
         self.cfg.pre_fork(self, worker)
         pid = os.fork()
+        # subprocess pid
         if pid != 0:
-            # 父进程，返回后继续创建其他worker，
-            # 没worker后进入到自己的消息循环
+            # 父(主)进程, 并保存在主进程中
             self.WORKERS[pid] = worker
             return pid
 

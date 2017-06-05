@@ -18,8 +18,10 @@ import gunicorn.util as util
 import gunicorn.workers.base as base
 from gunicorn import six
 
+
 class StopWaiting(Exception):
     """ exception raised to stop waiting for a connnection """
+
 
 class SyncWorker(base.Worker):
 
@@ -171,7 +173,7 @@ class SyncWorker(base.Worker):
         environ = {}
         resp = None
         try:
-            # 预处理请求
+            # 钩子函数
             self.cfg.pre_request(self, req)
             request_start = datetime.now()
             resp, environ = wsgi.create(req, client, addr,
@@ -187,6 +189,7 @@ class SyncWorker(base.Worker):
             if self.nr >= self.max_requests:
                 self.log.info("Autorestarting worker after current request.")
                 self.alive = False
+            # 调用web应用对象去处理请求
             respiter = self.wsgi(environ, resp.start_response)
             try:
                 # 输出响应
@@ -218,6 +221,7 @@ class SyncWorker(base.Worker):
             raise
         finally:
             try:
+                # 钩子函数
                 self.cfg.post_request(self, req, environ, resp)
             except Exception:
                 self.log.exception("Exception in post_request hook")

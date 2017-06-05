@@ -28,6 +28,7 @@ class BaseApplication(object):
         # 程序名称
         self.prog = prog
         self.logger = None
+        # 加载配置
         self.do_load_config()
 
     def do_load_config(self):
