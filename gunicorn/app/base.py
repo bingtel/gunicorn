@@ -2,17 +2,17 @@
 #
 # This file is part of gunicorn released under the MIT license.
 # See the NOTICE for more information.
-from __future__ import print_function
-
+import importlib.machinery
 import os
 import sys
 import traceback
+import types
 
-from gunicorn._compat import execfile_
 from gunicorn import util
 from gunicorn.arbiter import Arbiter
 from gunicorn.config import Config, get_default_config_file
 from gunicorn import debug
+
 
 class BaseApplication(object):
     """
@@ -80,7 +80,20 @@ class BaseApplication(object):
             sys.stderr.flush()
             sys.exit(1)
 
+
 class Application(BaseApplication):
+
+    # 'init' and 'load' methods are implemented by WSGIApplication.
+    # pylint: disable=abstract-method
+
+    def chdir(self):
+        # chdir to the configured path before loading,
+        # default is the current dir
+        os.chdir(self.cfg.chdir)
+
+        # add the path to sys.path
+        if self.cfg.chdir not in sys.path:
+            sys.path.insert(0, self.cfg.chdir)
 
     def get_config_from_filename(self, filename):
         """从filename指定的文件中获取配置
@@ -89,26 +102,22 @@ class Application(BaseApplication):
         if not os.path.exists(filename):
             raise RuntimeError("%r doesn't exist" % filename)
 
-        cfg = {
-            "__builtins__": __builtins__,
-            "__name__": "__config__",
-            "__file__": filename,
-            "__doc__": None,
-            "__package__": None
-        }
         try:
             # 执行一个文件
-            execfile_(filename, cfg, cfg)
+            module_name = '__config__'
+            mod = types.ModuleType(module_name)
+            loader = importlib.machinery.SourceFileLoader(module_name, filename)
+            loader.exec_module(mod)
         except Exception:
             print("Failed to read config file: %s" % filename, file=sys.stderr)
             traceback.print_exc()
             sys.stderr.flush()
             sys.exit(1)
 
-        return cfg
+        return vars(mod)
 
     def get_config_from_module_name(self, module_name):
-        return util.import_module(module_name).__dict__
+        return vars(importlib.import_module(module_name))
 
     def load_config_from_module_name_or_filename(self, location):
         """
@@ -151,26 +160,44 @@ class Application(BaseApplication):
         # optional settings from apps
         cfg = self.init(parser, args, args.args)
 
+        # set up import paths and follow symlinks
+        self.chdir()
+
         # Load up the any app specific configuration
-        if cfg and cfg is not None:
+        if cfg:
             for k, v in cfg.items():
                 self.cfg.set(k.lower(), v)
 
+        env_args = parser.parse_args(self.cfg.get_cmd_args_from_env())
+
         if args.config:
             self.load_config_from_file(args.config)
+        elif env_args.config:
+            self.load_config_from_file(env_args.config)
         else:
             default_config = get_default_config_file()
             if default_config is not None:
                 self.load_config_from_file(default_config)
 
-        # Lastly, update the configuration with any command line
-        # settings.
-        for k, v in args.__dict__.items():
+        # Load up environment configuration
+        for k, v in vars(env_args).items():
             if v is None:
                 continue
             if k == "args":
                 continue
             self.cfg.set(k.lower(), v)
+
+        # Lastly, update the configuration with any command line settings.
+        for k, v in vars(args).items():
+            if v is None:
+                continue
+            if k == "args":
+                continue
+            self.cfg.set(k.lower(), v)
+
+        # current directory might be changed by the config now
+        # set up import paths and follow symlinks
+        self.chdir()
 
     def run(self):
         # 配置校验无误
@@ -199,9 +226,7 @@ class Application(BaseApplication):
             util.daemonize(self.cfg.enable_stdio_inheritance)
 
         # set python paths
-        # A comma-separated list of directories to
-        # add to the Python path
-        if self.cfg.pythonpath and self.cfg.pythonpath is not None:
+        if self.cfg.pythonpath:
             paths = self.cfg.pythonpath.split(",")
             for path in paths:
                 pythonpath = os.path.abspath(path)
@@ -209,4 +234,4 @@ class Application(BaseApplication):
                     sys.path.insert(0, pythonpath)
 
         # 运行入口
-        super(Application, self).run()
+        super().run()

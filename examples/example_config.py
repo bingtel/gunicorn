@@ -38,15 +38,10 @@ backlog = 2048
 #       for information on when you might want to choose one
 #       of the other worker classes.
 #
-#       An string referring to a 'gunicorn.workers' entry point
-#       or a python path to a subclass of
+#       A string referring to a Python path to a subclass of
 #       gunicorn.workers.base.Worker. The default provided values
-#       are:
-#
-#           egg:gunicorn#sync
-#           egg:gunicorn#eventlet   - Requires eventlet >= 0.9.7
-#           egg:gunicorn#gevent     - Requires gevent >= 0.12.2 (?)
-#           egg:gunicorn#tornado    - Requires tornado >= 0.2
+#       can be seen at
+#       http://docs.gunicorn.org/en/latest/settings.html#worker-class
 #
 #   worker_connections - For the eventlet and gevent worker classes
 #       this limits the maximum number of simultaneous clients that
@@ -94,6 +89,8 @@ spew = False
 #
 #       True or False
 #
+#   raw_env - Pass environment variables to the execution environment.
+#
 #   pidfile - The path to a pid file to write
 #
 #       A path string or None to not write a pid file.
@@ -126,6 +123,10 @@ spew = False
 #
 
 daemon = False
+raw_env = [
+    'DJANGO_SECRET_KEY=something',
+    'SPAM=eggs',
+]
 pidfile = None
 umask = 0
 user = None
@@ -199,7 +200,7 @@ def worker_int(worker):
 
     ## get traceback info
     import threading, sys, traceback
-    id2name = dict([(th.ident, th.name) for th in threading.enumerate()])
+    id2name = {th.ident: th.name for th in threading.enumerate()}
     code = []
     for threadId, stack in sys._current_frames().items():
         code.append("\n# Thread: %s(%d)" % (id2name.get(threadId,""),

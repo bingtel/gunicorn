@@ -16,11 +16,10 @@ import gunicorn.http as http
 import gunicorn.http.wsgi as wsgi
 import gunicorn.util as util
 import gunicorn.workers.base as base
-from gunicorn import six
 
 
 class StopWaiting(Exception):
-    """ exception raised to stop waiting for a connnection """
+    """ exception raised to stop waiting for a connection """
 
 
 class SyncWorker(base.Worker):
@@ -141,8 +140,8 @@ class SyncWorker(base.Worker):
                     **self.cfg.ssl_options)
 
             parser = http.RequestParser(self.cfg, client)
-            req = six.next(parser)
             # 处理请求
+            req = next(parser)
             self.handle_request(listener, req, client, addr)
         except http.errors.NoMoreData as e:
             self.log.debug("Ignored premature client disconnection. %s", e)
@@ -206,7 +205,7 @@ class SyncWorker(base.Worker):
                     respiter.close()
         except EnvironmentError:
             # pass to next try-except level
-            six.reraise(*sys.exc_info())
+            util.reraise(*sys.exc_info())
         except Exception:
             if resp and resp.headers_sent:
                 # If the requests have already been sent, we should close the

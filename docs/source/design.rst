@@ -34,6 +34,10 @@ as any errors will affect at most a single request. Though as we describe below
 only processing a single request at a time requires some assumptions about how
 applications are programmed.
 
+``sync`` worker does not support persistent connections - each connection is
+closed after response has been sent (even if you manually add ``Keep-Alive``
+or ``Connection: keep-alive`` header in your application).
+
 Async Workers
 -------------
 
@@ -42,6 +46,13 @@ Gevent_). Greenlets are an implementation of cooperative multi-threading for
 Python. In general, an application should be able to make use of these worker
 classes with no changes.
 
+For full greenlet support applications might need to be adapted.
+When using, e.g., Gevent_ and Psycopg_ it makes sense to ensure psycogreen_ is
+installed and `setup <http://www.gevent.org/api/gevent.monkey.html#plugins>`_.
+
+Other applications might not be compatible at all as they, e.g., rely on
+the original unpatched behavior.
+
 Tornado Workers
 ---------------
 
@@ -49,10 +60,13 @@ There's also a Tornado worker class. It can be used to write applications using
 the Tornado framework. Although the Tornado workers are capable of serving a
 WSGI application, this is not a recommended configuration.
 
+
+.. _asyncio-workers:
+
 AsyncIO Workers
 ---------------
 
-These workers are compatible with python3. You have two kind of workers.
+These workers are compatible with Python 3.
 
 The worker `gthread` is a threaded worker. It accepts connections in the
 main loop, accepted connections are added to the thread pool as a
@@ -60,23 +74,25 @@ connection job. On keepalive connections are put back in the loop
 waiting for an event. If no event happen after the keep alive timeout,
 the connection is closed.
 
-The worker `gaiohttp` is a full asyncio worker using aiohttp_.
+You can port also your application to use aiohttp_'s `web.Application`` API and use the
+``aiohttp.worker.GunicornWebWorker`` worker.
 
 Choosing a Worker Type
 ======================
 
 The default synchronous workers assume that your application is resource-bound
 in terms of CPU and network bandwidth. Generally this means that your
-application shouldn't do anything that takes an undefined amount of time. An example
-of something that takes an undefined amount of time is a request to the internet.
-At some point the external network will fail in such a way that clients will pile up on your
-servers. So, in this sense, any web application which makes outgoing requests to
-APIs will benefit from an asynchronous worker.
+application shouldn't do anything that takes an undefined amount of time. An
+example of something that takes an undefined amount of time is a request to the
+internet. At some point the external network will fail in such a way that
+clients will pile up on your servers. So, in this sense, any web application
+which makes outgoing requests to APIs will benefit from an asynchronous worker.
 
-This resource bound assumption is why we require a buffering proxy in front of a
-default configuration Gunicorn. If you exposed synchronous workers to the
+This resource bound assumption is why we require a buffering proxy in front of
+a default configuration Gunicorn. If you exposed synchronous workers to the
 internet, a DOS attack would be trivial by creating a load that trickles data to
-the servers. For the curious, Boom_ is an example of this type of load.
+the servers. For the curious, Hey_ is an example of this type of load.
+
 
 Some examples of behavior requiring asynchronous workers:
 
@@ -105,30 +121,34 @@ optimal number of workers. Our recommendation is to start with the above guess
 and tune using TTIN and TTOU signals while the application is under load.
 
 Always remember, there is such a thing as too many workers. After a point your
-worker processes will start thrashing system resources decreasing the throughput
-of the entire system.
+worker processes will start thrashing system resources decreasing the
+throughput of the entire system.
 
 How Many Threads?
 ===================
 
 Since Gunicorn 19, a threads option can be used to process requests in multiple
-threads. Using threads assumes use of the sync worker. One benefit from threads
+threads. Using threads assumes use of the gthread worker. One benefit from threads
 is that requests can take longer than the worker timeout while notifying the
 master process that it is not frozen and should not be killed. Depending on the
 system, using multiple threads, multiple worker processes, or some mixture, may
 yield the best results. For example, CPython may not perform as well as Jython
 when using threads, as threading is implemented differently by each. Using
 threads instead of processes is a good way to reduce the memory footprint of
-Gunicorn, while still allowing for application upgrades using the reload signal,
-as the application code will be shared among workers but loaded only in the
-worker processes (unlike when using the preload setting, which loads the code in
-the master process).
+Gunicorn, while still allowing for application upgrades using the reload
+signal, as the application code will be shared among workers but loaded only in
+the worker processes (unlike when using the preload setting, which loads the
+code in the master process).
 
-.. note:: Under Python 2.x, you need to install the 'futures' package to use
-   this feature.
+.. note::
+   Under Python 2.x, you need to install the 'futures' package to use this
+   feature.
 
 .. _Greenlets: https://github.com/python-greenlet/greenlet
-.. _Eventlet: http://eventlet.net
-.. _Gevent: http://gevent.org
-.. _Boom: http://ha.ckers.org/slowloris/
-.. _aiohttp: https://github.com/KeepSafe/aiohttp
+.. _Eventlet: http://eventlet.net/
+.. _Gevent: http://www.gevent.org/
+.. _Hey: https://github.com/rakyll/hey
+.. _aiohttp: https://docs.aiohttp.org/en/stable/deployment.html#nginx-gunicorn
+.. _`example`: https://github.com/benoitc/gunicorn/blob/master/examples/frameworks/flaskapp_aiohttp_wsgi.py
+.. _Psycopg: http://initd.org/psycopg/
+.. _psycogreen: https://bitbucket.org/dvarrazzo/psycogreen

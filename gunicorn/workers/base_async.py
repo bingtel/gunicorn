@@ -13,7 +13,6 @@ import gunicorn.http as http
 import gunicorn.http.wsgi as wsgi
 import gunicorn.util as util
 import gunicorn.workers.base as base
-from gunicorn import six
 
 ALREADY_HANDLED = object()
 
@@ -21,11 +20,15 @@ ALREADY_HANDLED = object()
 class AsyncWorker(base.Worker):
 
     def __init__(self, *args, **kwargs):
-        super(AsyncWorker, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
         self.worker_connections = self.cfg.worker_connections
 
     def timeout_ctx(self):
         raise NotImplementedError()
+
+    def is_already_handled(self, respiter):
+        # some workers will need to overload this function to raise a StopIteration
+        return respiter == ALREADY_HANDLED
 
     def handle(self, listener, client, addr):
         req = None
@@ -34,7 +37,7 @@ class AsyncWorker(base.Worker):
             try:
                 listener_name = listener.getsockname()
                 if not self.cfg.keepalive:
-                    req = six.next(parser)
+                    req = next(parser)
                     self.handle_request(listener_name, req, client, addr)
                 else:
                     # keepalive loop
@@ -42,7 +45,7 @@ class AsyncWorker(base.Worker):
                     while True:
                         req = None
                         with self.timeout_ctx():
-                            req = six.next(parser)
+                            req = next(parser)
                         if not req:
                             break
                         if req.proxy_protocol_info:
@@ -56,10 +59,10 @@ class AsyncWorker(base.Worker):
                 self.log.debug("Closing connection. %s", e)
             except ssl.SSLError:
                 # pass to next try-except level
-                six.reraise(*sys.exc_info())
+                util.reraise(*sys.exc_info())
             except EnvironmentError:
                 # pass to next try-except level
-                six.reraise(*sys.exc_info())
+                util.reraise(*sys.exc_info())
             except Exception as e:
                 self.handle_error(req, client, addr, e)
         except ssl.SSLError as e:
@@ -101,7 +104,7 @@ class AsyncWorker(base.Worker):
                 resp.force_close()
 
             respiter = self.wsgi(environ, resp.start_response)
-            if respiter == ALREADY_HANDLED:
+            if self.is_already_handled(respiter):
                 return False
             try:
                 if isinstance(respiter, environ['wsgi.file_wrapper']):
@@ -122,7 +125,7 @@ class AsyncWorker(base.Worker):
         except EnvironmentError:
             # If the original exception was a socket.error we delegate
             # handling it to the caller (where handle() might ignore it)
-            six.reraise(*sys.exc_info())
+            util.reraise(*sys.exc_info())
         except Exception:
             if resp and resp.headers_sent:
                 # If the requests have already been sent, we should close the

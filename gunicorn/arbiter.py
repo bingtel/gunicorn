@@ -2,8 +2,6 @@
 #
 # This file is part of gunicorn released under the MIT license.
 # See the NOTICE for more information.
-from __future__ import print_function
-
 import errno
 import os
 import random
@@ -15,8 +13,7 @@ import traceback
 
 from gunicorn.errors import HaltServer, AppImportError
 from gunicorn.pidfile import Pidfile
-from gunicorn.sock import create_sockets
-from gunicorn import util
+from gunicorn import sock, systemd, util
 
 from gunicorn import __version__, SERVER_SOFTWARE
 
@@ -76,6 +73,7 @@ class Arbiter(object):
         self.setup(app)
 
         self.pidfile = None
+        self.systemd = False
         self.worker_age = 0
         self.reexec_pid = 0
         self.master_pid = 0
@@ -167,14 +165,30 @@ class Arbiter(object):
         # 为信号注册对应的处理函数
         self.init_signals()
 
+<<<<<<< HEAD
         # socket连接,将被工作者进程处理
+=======
+>>>>>>> dc7b5d5c4876b49f86ea2460698a335d0f5ef7c9
         if not self.LISTENERS:
-            self.LISTENERS = create_sockets(self.cfg, self.log)
+            fds = None
+            listen_fds = systemd.listen_fds()
+            if listen_fds:
+                self.systemd = True
+                fds = range(systemd.SD_LISTEN_FDS_START,
+                            systemd.SD_LISTEN_FDS_START + listen_fds)
+
+            elif self.master_pid:
+                fds = []
+                for fd in os.environ.pop('GUNICORN_FD').split(','):
+                    fds.append(int(fd))
+
+            self.LISTENERS = sock.create_sockets(self.cfg, self.log, fds)
 
         listeners_str = ",".join([str(l) for l in self.LISTENERS])
         self.log.debug("Arbiter booted")
         self.log.info("Listening at: %s (%s)", listeners_str, self.pid)
         self.log.info("Using worker: %s", self.cfg.worker_class_str)
+        systemd.sd_notify("READY=1\nSTATUS=Gunicorn arbiter booted", self.log)
 
         # check worker class requirements
         if hasattr(self.worker_class, "check_config"):
@@ -189,8 +203,8 @@ class Arbiter(object):
         are queued. Child signals only wake up the master.
         """
         # close old PIPE
-        if self.PIPE:
-            [os.close(p) for p in self.PIPE]
+        for p in self.PIPE:
+            os.close(p)
 
         # initialize the pipe
         # (r, w)
@@ -201,8 +215,14 @@ class Arbiter(object):
 
         self.log.close_on_exec()
 
+<<<<<<< HEAD
         # bind signals
         [signal.signal(s, self.signal) for s in self.SIGNALS]
+=======
+        # initialize all signals
+        for s in self.SIGNALS:
+            signal.signal(s, self.signal)
+>>>>>>> dc7b5d5c4876b49f86ea2460698a335d0f5ef7c9
         signal.signal(signal.SIGCHLD, self.handle_chld)
 
     def signal(self, sig, frame):
@@ -225,8 +245,12 @@ class Arbiter(object):
             while True:
                 self.maybe_promote_master()
 
+<<<<<<< HEAD
                 # 从信号队列中取出新的信号
                 sig = self.SIG_QUEUE.pop(0) if len(self.SIG_QUEUE) else None
+=======
+                sig = self.SIG_QUEUE.pop(0) if self.SIG_QUEUE else None
+>>>>>>> dc7b5d5c4876b49f86ea2460698a335d0f5ef7c9
                 if sig is None:
                     self.sleep()
                     self.murder_workers()
@@ -327,7 +351,7 @@ class Arbiter(object):
         self.reexec()
 
     def handle_winch(self):
-        "SIGWINCH handling"
+        """SIGWINCH handling"""
         if self.cfg.daemon:
             self.log.info("graceful stop of workers")
             self.num_workers = 0
@@ -386,11 +410,10 @@ class Arbiter(object):
                 return
             while os.read(self.PIPE[0], 1):
                 pass
-        except select.error as e:
-            if e.args[0] not in [errno.EAGAIN, errno.EINTR]:
-                raise
-        except OSError as e:
-            if e.errno not in [errno.EAGAIN, errno.EINTR]:
+        except (select.error, OSError) as e:
+            # TODO: select.error is a subclass of OSError since Python 3.3.
+            error_number = getattr(e, 'errno', e.args[0])
+            if error_number not in [errno.EAGAIN, errno.EINTR]:
                 raise
         except KeyboardInterrupt:
             sys.exit()
@@ -402,10 +425,12 @@ class Arbiter(object):
         :attr graceful: boolean, If True (the default) workers will be
         killed gracefully  (ie. trying to wait for the current connection)
         """
-
-        if self.reexec_pid == 0 and self.master_pid == 0:
-            for l in self.LISTENERS:
-                l.close()
+        unlink = (
+            self.reexec_pid == self.master_pid == 0
+            and not self.systemd
+            and not self.cfg.reuse_port
+        )
+        sock.close_sockets(self.LISTENERS, unlink)
 
         self.LISTENERS = []
         sig = signal.SIGTERM
@@ -440,9 +465,14 @@ class Arbiter(object):
         self.cfg.pre_exec(self)
 
         environ = self.cfg.env_orig.copy()
-        fds = [l.fileno() for l in self.LISTENERS]
-        environ['GUNICORN_FD'] = ",".join([str(fd) for fd in fds])
         environ['GUNICORN_PID'] = str(master_pid)
+
+        if self.systemd:
+            environ['LISTEN_PID'] = str(os.getpid())
+            environ['LISTEN_FDS'] = str(len(self.LISTENERS))
+        else:
+            environ['GUNICORN_FD'] = ','.join(
+                str(l.fileno()) for l in self.LISTENERS)
 
         os.chdir(self.START_CTX['cwd'])
 
@@ -475,9 +505,10 @@ class Arbiter(object):
         # do we need to change listener ?
         if old_address != self.cfg.address:
             # close all listeners
-            [l.close() for l in self.LISTENERS]
+            for l in self.LISTENERS:
+                l.close()
             # init new listeners
-            self.LISTENERS = create_sockets(self.cfg, self.log)
+            self.LISTENERS = sock.create_sockets(self.cfg, self.log)
             listeners_str = ",".join([str(l) for l in self.LISTENERS])
             self.log.info("Listening at: %s", listeners_str)
 
@@ -497,7 +528,7 @@ class Arbiter(object):
         util._setproctitle("master [%s]" % self.proc_name)
 
         # spawn new workers
-        for i in range(self.cfg.workers):
+        for _ in range(self.cfg.workers):
             self.spawn_worker()
 
         # manage workers
@@ -538,8 +569,9 @@ class Arbiter(object):
                 if self.reexec_pid == wpid:
                     self.reexec_pid = 0
                 else:
-                    # A worker said it cannot boot. We'll shutdown
-                    # to avoid infinite start/stop cycles.
+                    # A worker was terminated. If the termination reason was
+                    # that it could not boot, we'll shut it down to avoid
+                    # infinite start/stop cycles.
                     exitcode = status >> 8
                     if exitcode == self.WORKER_BOOT_ERROR:
                         reason = "Worker failed to boot."
@@ -547,10 +579,12 @@ class Arbiter(object):
                     if exitcode == self.APP_LOAD_ERROR:
                         reason = "App failed to load."
                         raise HaltServer(reason, self.APP_LOAD_ERROR)
+
                     worker = self.WORKERS.pop(wpid, None)
                     if not worker:
                         continue
                     worker.tmp.close()
+                    self.cfg.child_exit(self, worker)
         except OSError as e:
             if e.errno != errno.ECHILD:
                 raise
@@ -560,7 +594,7 @@ class Arbiter(object):
         Maintain the number of workers by spawning or killing
         as required.
         """
-        if len(self.WORKERS.keys()) < self.num_workers:
+        if len(self.WORKERS) < self.num_workers:
             # 工作者进程少于配置参数
             # 创建新的
             self.spawn_workers()
@@ -595,15 +629,23 @@ class Arbiter(object):
         pid = os.fork()
         # subprocess pid
         if pid != 0:
+<<<<<<< HEAD
             # 父(主)进程, 并保存在主进程中
+=======
+            worker.pid = pid
+>>>>>>> dc7b5d5c4876b49f86ea2460698a335d0f5ef7c9
             self.WORKERS[pid] = worker
             return pid
 
+        # Do not inherit the temporary files of other workers
+        for sibling in self.WORKERS.values():
+            sibling.tmp.close()
+
         # Process Child
-        worker_pid = os.getpid()
+        worker.pid = os.getpid()
         try:
             util._setproctitle("worker [%s]" % self.proc_name)
-            self.log.info("Booting worker with pid: %s", worker_pid)
+            self.log.info("Booting worker with pid: %s", worker.pid)
             self.cfg.post_fork(self, worker)
             # 初始化子进程
             worker.init_process()
@@ -617,12 +659,12 @@ class Arbiter(object):
             sys.stderr.flush()
             sys.exit(self.APP_LOAD_ERROR)
         except:
-            self.log.exception("Exception in worker process"),
+            self.log.exception("Exception in worker process")
             if not worker.booted:
                 sys.exit(self.WORKER_BOOT_ERROR)
             sys.exit(-1)
         finally:
-            self.log.info("Worker exiting (pid: %s)", worker_pid)
+            self.log.info("Worker exiting (pid: %s)", worker.pid)
             try:
                 worker.tmp.close()
                 self.cfg.worker_exit(self, worker)
@@ -640,7 +682,7 @@ class Arbiter(object):
         of the master process.
         """
 
-        for i in range(self.num_workers - len(self.WORKERS.keys())):
+        for _ in range(self.num_workers - len(self.WORKERS)):
             self.spawn_worker()
             time.sleep(0.1 * random.random())
 

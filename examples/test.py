@@ -21,7 +21,7 @@ def app(environ, start_response):
         ('Content-type', 'text/plain'),
         ('Content-Length', str(len(data))),
         ('X-Gunicorn-Version', __version__),
-        #("Test", "test тест"),
+        ('Foo', 'B\u00e5r'),  # Foo: Bår
     ]
     start_response(status, response_headers)
     return iter([data])

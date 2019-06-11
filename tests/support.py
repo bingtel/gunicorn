@@ -2,8 +2,24 @@ import functools
 import sys
 import unittest
 import platform
+from wsgiref.validate import validator
 
 HOST = "127.0.0.1"
+
+
+@validator
+def app(environ, start_response):
+    """Simplest possible application object"""
+
+    data = b'Hello, World!\n'
+    status = '200 OK'
+
+    response_headers = [
+        ('Content-type', 'text/plain'),
+        ('Content-Length', str(len(data))),
+    ]
+    start_response(status, response_headers)
+    return iter([data])
 
 
 def requires_mac_ver(*min_version):
@@ -32,18 +48,3 @@ def requires_mac_ver(*min_version):
         wrapper.min_version = min_version
         return wrapper
     return decorator
-
-try:
-    from types import SimpleNamespace
-except ImportError:
-    class SimpleNamespace(object):
-        def __init__(self, **kwargs):
-            self.__dict__.update(kwargs)
-
-        def __repr__(self):
-            keys = sorted(self.__dict__)
-            items = ("{}={!r}".format(k, self.__dict__[k]) for k in keys)
-            return "{}({})".format(type(self).__name__, ", ".join(items))
-
-        def __eq__(self, other):
-            return self.__dict__ == other.__dict__

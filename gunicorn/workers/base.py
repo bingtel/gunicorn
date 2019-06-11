@@ -3,25 +3,27 @@
 # This file is part of gunicorn released under the MIT license.
 # See the NOTICE for more information.
 
-from datetime import datetime
+import io
 import os
-from random import randint
 import signal
-from ssl import SSLError
 import sys
 import time
 import traceback
+from datetime import datetime
+from random import randint
+from ssl import SSLError
 
 from gunicorn import util
-from gunicorn.workers.workertmp import WorkerTmp
-from gunicorn.reloader import Reloader
 from gunicorn.http.errors import (
-    InvalidHeader, InvalidHeaderName, InvalidRequestLine, InvalidRequestMethod,
-    InvalidHTTPVersion, LimitRequestLine, LimitRequestHeaders,
+    ForbiddenProxyRequest, InvalidHeader,
+    InvalidHeaderName, InvalidHTTPVersion,
+    InvalidProxyLine, InvalidRequestLine,
+    InvalidRequestMethod, InvalidSchemeHeaders,
+    LimitRequestHeaders, LimitRequestLine,
 )
-from gunicorn.http.errors import InvalidProxyLine, ForbiddenProxyRequest
-from gunicorn.http.wsgi import default_environ, Response
-from gunicorn.six import MAXSIZE
+from gunicorn.http.wsgi import Response, default_environ
+from gunicorn.reloader import reloader_engines
+from gunicorn.workers.workertmp import WorkerTmp
 
 
 class Worker(object):
@@ -38,6 +40,7 @@ class Worker(object):
         changes you'll want to do that in ``self.init_process()``.
         """
         self.age = age
+        self.pid = "[booting]"
         self.ppid = ppid
         self.sockets = sockets
         # 应用对象
@@ -51,18 +54,19 @@ class Worker(object):
 
         # number of requests received
         self.nr = 0
-        jitter = randint(0, cfg.max_requests_jitter)
-        self.max_requests = cfg.max_requests + jitter or MAXSIZE
+
+        if cfg.max_requests > 0:
+            jitter = randint(0, cfg.max_requests_jitter)
+            self.max_requests = cfg.max_requests + jitter
+        else:
+            self.max_requests = sys.maxsize
+
         self.alive = True
         self.log = log
         self.tmp = WorkerTmp(cfg)
 
     def __str__(self):
         return "<Worker %s>" % self.pid
-
-    @property
-    def pid(self):
-        return os.getpid()
 
     def notify(self):
         """\
@@ -84,21 +88,8 @@ class Worker(object):
         """\
         If you override this method in a subclass, the last statement
         in the function should be to call this method with
-        super(MyWorkerClass, self).init_process() so that the ``run()``
-        loop is initiated.
+        super().init_process() so that the ``run()`` loop is initiated.
         """
-
-        # start the reloader
-        if self.cfg.reload:
-            def changed(fname):
-                self.log.info("Worker reloading: %s modified", fname)
-                self.alive = False
-                self.cfg.worker_int(self)
-                time.sleep(0.1)
-                sys.exit(0)
-
-            self.reloader = Reloader(callback=changed)
-            self.reloader.start()
 
         # set environment' variables
         if self.cfg.env:
@@ -118,7 +109,8 @@ class Worker(object):
             util.close_on_exec(p)
 
         # Prevent fd inheritance
-        [util.close_on_exec(s) for s in self.sockets]
+        for s in self.sockets:
+            util.close_on_exec(s)
         util.close_on_exec(self.tmp.fileno())
 
         self.wait_fds = self.sockets + [self.PIPE[0]]
@@ -128,9 +120,22 @@ class Worker(object):
         # 注册信号和对应的处理函数
         self.init_signals()
 
-        self.load_wsgi()
+        # start the reloader
+        if self.cfg.reload:
+            def changed(fname):
+                self.log.info("Worker reloading: %s modified", fname)
+                self.alive = False
+                self.cfg.worker_int(self)
+                time.sleep(0.1)
+                sys.exit(0)
 
-        # 钩子函数
+            # 钩子函数
+            reloader_cls = reloader_engines[self.cfg.reload_engine]
+            self.reloader = reloader_cls(extra_files=self.cfg.reload_extra_files,
+                                         callback=changed)
+            self.reloader.start()
+
+        self.load_wsgi()
         self.cfg.post_worker_init(self)
 
         # Enter main run loop
@@ -152,17 +157,19 @@ class Worker(object):
             # per https://docs.python.org/2/library/sys.html#sys.exc_info warning,
             # delete the traceback after use.
             try:
-                exc_type, exc_val, exc_tb = sys.exc_info()
+                _, exc_val, exc_tb = sys.exc_info()
                 self.reloader.add_extra_file(exc_val.filename)
 
-                tb_string = traceback.format_tb(exc_tb)
-                self.wsgi = util.make_fail_app(tb_string)
+                tb_string = io.StringIO()
+                traceback.print_tb(exc_tb, file=tb_string)
+                self.wsgi = util.make_fail_app(tb_string.getvalue())
             finally:
                 del exc_tb
 
     def init_signals(self):
         # reset signaling
-        [signal.signal(s, signal.SIG_DFL) for s in self.SIGNALS]
+        for s in self.SIGNALS:
+            signal.signal(s, signal.SIG_DFL)
         # init new signaling
         signal.signal(signal.SIGQUIT, self.handle_quit)
         signal.signal(signal.SIGTERM, self.handle_exit)
@@ -173,9 +180,8 @@ class Worker(object):
 
         # Don't let SIGTERM and SIGUSR1 disturb active requests
         # by interrupting system calls
-        if hasattr(signal, 'siginterrupt'):  # python >= 2.6
-            signal.siginterrupt(signal.SIGTERM, False)
-            signal.siginterrupt(signal.SIGUSR1, False)
+        signal.siginterrupt(signal.SIGTERM, False)
+        signal.siginterrupt(signal.SIGUSR1, False)
 
         if hasattr(signal, 'set_wakeup_fd'):
             signal.set_wakeup_fd(self.PIPE[1])
@@ -205,6 +211,7 @@ class Worker(object):
                 InvalidHTTPVersion, InvalidHeader, InvalidHeaderName,
                 LimitRequestLine, LimitRequestHeaders,
                 InvalidProxyLine, ForbiddenProxyRequest,
+                InvalidSchemeHeaders,
                 SSLError)):
 
             status_int = 400
@@ -230,6 +237,8 @@ class Worker(object):
                 reason = "Forbidden"
                 mesg = "Request forbidden"
                 status_int = 403
+            elif isinstance(exc, InvalidSchemeHeaders):
+                mesg = "%s" % str(exc)
             elif isinstance(exc, SSLError):
                 reason = "Forbidden"
                 mesg = "'%s'" % str(exc)

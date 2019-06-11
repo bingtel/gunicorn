@@ -3,46 +3,41 @@
 # This file is part of the pywebmachine package released
 # under the MIT license.
 
-import t
-
 import inspect
+import importlib.machinery
 import os
 import random
+import types
 
-from gunicorn._compat import execfile_
 from gunicorn.config import Config
 from gunicorn.http.parser import RequestParser
-from gunicorn.six.moves.urllib.parse import urlparse
-from gunicorn import six
+from gunicorn.util import split_request_uri
 
 dirname = os.path.dirname(__file__)
 random.seed()
 
+
 def uri(data):
     ret = {"raw": data}
-    parts = urlparse(data)
+    parts = split_request_uri(data)
     ret["scheme"] = parts.scheme or ''
     ret["host"] = parts.netloc.rsplit(":", 1)[0] or None
     ret["port"] = parts.port or 80
-    if parts.path and parts.params:
-        ret["path"] = ";".join([parts.path, parts.params])
-    elif parts.path:
-        ret["path"] = parts.path
-    elif parts.params:
-        # Don't think this can happen
-        ret["path"] = ";" + parts.path
-    else:
-        ret["path"] = ''
+    ret["path"] = parts.path or ''
     ret["query"] = parts.query or ''
     ret["fragment"] = parts.fragment or ''
     return ret
 
+
 def load_py(fname):
-    config = globals().copy()
-    config["uri"] = uri
-    config["cfg"] = Config()
-    execfile_(fname, config)
-    return config
+    module_name = '__config__'
+    mod = types.ModuleType(module_name)
+    setattr(mod, 'uri', uri)
+    setattr(mod, 'cfg', Config())
+    loader = importlib.machinery.SourceFileLoader(module_name, fname)
+    loader.exec_module(mod)
+    return vars(mod)
+
 
 class request(object):
     def __init__(self, fname, expect):
@@ -73,12 +68,12 @@ class request(object):
             yield lines[:pos+2]
             lines = lines[pos+2:]
             pos = lines.find(b"\r\n")
-        if len(lines):
+        if lines:
             yield lines
 
     def send_bytes(self):
-        for d in str(self.data.decode("latin1")):
-            yield bytes(d.encode("latin1"))
+        for d in self.data:
+            yield bytes([d])
 
     def send_random(self):
         maxs = round(len(self.data) / 10)
@@ -136,7 +131,7 @@ class request(object):
     def match_read(self, req, body, sizes):
         data = self.szread(req.body.read, sizes)
         count = 1000
-        while len(body):
+        while body:
             if body[:len(data)] != data:
                 raise AssertionError("Invalid body data read: %r != %r" % (
                                         data, body[:len(data)]))
@@ -147,9 +142,9 @@ class request(object):
             if count <= 0:
                 raise AssertionError("Unexpected apparent EOF")
 
-        if len(body):
+        if body:
             raise AssertionError("Failed to read entire body: %r" % body)
-        elif len(data):
+        elif data:
             raise AssertionError("Read beyond expected body: %r" % data)
         data = req.body.read(sizes())
         if data:
@@ -158,7 +153,7 @@ class request(object):
     def match_readline(self, req, body, sizes):
         data = self.szread(req.body.readline, sizes)
         count = 1000
-        while len(body):
+        while body:
             if body[:len(data)] != data:
                 raise AssertionError("Invalid data read: %r" % data)
             if b'\n' in data[:-1]:
@@ -169,9 +164,9 @@ class request(object):
                 count -= 1
             if count <= 0:
                 raise AssertionError("Apparent unexpected EOF")
-        if len(body):
+        if body:
             raise AssertionError("Failed to read entire body: %r" % body)
-        elif len(data):
+        elif data:
             raise AssertionError("Read beyond expected body: %r" % data)
         data = req.body.readline(sizes())
         if data:
@@ -189,7 +184,7 @@ class request(object):
                 raise AssertionError("Invalid body data read: %r != %r" % (
                                                     line, body[:len(line)]))
             body = body[len(line):]
-        if len(body):
+        if body:
             raise AssertionError("Failed to read entire body: %r" % body)
         data = req.body.readlines(sizes())
         if data:
@@ -206,10 +201,10 @@ class request(object):
                 raise AssertionError("Invalid body data read: %r != %r" % (
                                                     line, body[:len(line)]))
             body = body[len(line):]
-        if len(body):
+        if body:
             raise AssertionError("Failed to read entire body: %r" % body)
         try:
-            data = six.next(iter(req.body))
+            data = next(iter(req.body))
             raise AssertionError("Read data after body finished: %r" % data)
         except StopIteration:
             pass
@@ -253,7 +248,7 @@ class request(object):
         p = RequestParser(cfg, sender())
         for req in p:
             self.same(req, sizer, matcher, cases.pop(0))
-        assert len(cases) == 0
+        assert not cases
 
     def same(self, req, sizer, matcher, exp):
         assert req.method == exp["method"]
@@ -265,6 +260,7 @@ class request(object):
         assert req.headers == exp["headers"]
         matcher(req, exp["body"], sizer)
         assert req.trailers == exp.get("trailers", [])
+
 
 class badrequest(object):
     def __init__(self, fname):
@@ -287,4 +283,4 @@ class badrequest(object):
 
     def check(self, cfg):
         p = RequestParser(cfg, self.send())
-        six.next(p)
+        next(p)

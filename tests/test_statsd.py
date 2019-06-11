@@ -1,18 +1,14 @@
-from datetime import timedelta
-import socket
-
-import t
-
+import io
 import logging
-import tempfile
-import shutil
 import os
+import shutil
+import socket
+import tempfile
+from datetime import timedelta
+from types import SimpleNamespace
 
 from gunicorn.config import Config
 from gunicorn.instrument.statsd import Statsd
-from gunicorn.six import StringIO
-
-from support import SimpleNamespace
 
 
 class StatsdTestException(Exception):
@@ -62,10 +58,22 @@ def test_statsd_fail():
     logger.warning("No impact on logging")
     logger.exception("No impact on logging")
 
+
+def test_dogstatsd_tags():
+    c = Config()
+    tags = 'yucatan,libertine:rhubarb'
+    c.set('dogstatsd_tags', tags)
+    logger = Statsd(c)
+    logger.sock = MockSocket(False)
+    logger.info("Twill", extra={"mtype": "gauge", "metric": "barb.westerly",
+                                "value": 2})
+    assert logger.sock.msgs[0] == b"barb.westerly:2|g|#" + tags.encode('ascii')
+
+
 def test_instrument():
     logger = Statsd(Config())
     # Capture logged messages
-    sio = StringIO()
+    sio = io.StringIO()
     logger.error_log.addHandler(logging.StreamHandler(sio))
     logger.sock = MockSocket(False)
 
@@ -96,6 +104,7 @@ def test_instrument():
     assert logger.sock.msgs[1] == b"gunicorn.requests:1|c|@1.0"
     assert logger.sock.msgs[2] == b"gunicorn.request.status.200:1|c|@1.0"
 
+
 def test_prefix():
     c = Config()
     c.set("statsd_prefix", "test.")
@@ -104,6 +113,7 @@ def test_prefix():
 
     logger.info("Blah", extra={"mtype": "gauge", "metric": "gunicorn.test", "value": 666})
     assert logger.sock.msgs[0] == b"test.gunicorn.test:666|g"
+
 
 def test_prefix_no_dot():
     c = Config()
@@ -114,6 +124,7 @@ def test_prefix_no_dot():
     logger.info("Blah", extra={"mtype": "gauge", "metric": "gunicorn.test", "value": 666})
     assert logger.sock.msgs[0] == b"test.gunicorn.test:666|g"
 
+
 def test_prefix_multiple_dots():
     c = Config()
     c.set("statsd_prefix", "test...")
@@ -122,6 +133,7 @@ def test_prefix_multiple_dots():
 
     logger.info("Blah", extra={"mtype": "gauge", "metric": "gunicorn.test", "value": 666})
     assert logger.sock.msgs[0] == b"test.gunicorn.test:666|g"
+
 
 def test_prefix_nested():
     c = Config()
